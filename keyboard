@@ -1,0 +1,72 @@
+`timescale 1ns / 1ps
+
+module keyboard(
+    input wire clk, reset,
+    input wire ps2d, ps2c,
+    output wire KEY_A, KEY_S,
+    output wire KEY_K, KEY_L,
+    output reg key_release
+);
+
+    // Declare variables
+    wire [7:0] dout;
+    wire rx_done_tick;
+    supply1 rx_en; // always HIGH
+    
+    // Key state registers
+    reg a_pressed, s_pressed, k_pressed, l_pressed;
+    reg [7:0] prev_key; // To detect release code sequence
+
+    // Instantiate PS/2 receiver
+    ps2_rx ps2 (
+        .clk(clk),
+        .reset(reset),
+        .ps2d(ps2d),
+        .ps2c(ps2c),
+        .rx_en(rx_en),
+        .rx_done_tick(rx_done_tick),
+        .dout(dout)
+    );
+
+    // Sequential logic to track key states
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            a_pressed <= 0;
+            s_pressed <= 0;
+            k_pressed <= 0;
+            l_pressed <= 0;
+            key_release <= 0;
+            prev_key <= 0;
+        end
+        else if (rx_done_tick) begin
+            prev_key <= dout; // Store previous scan code
+            if (prev_key == 8'hF0) begin // Release code detected
+                key_release <= 1;
+                case (dout)
+                    8'h1C: a_pressed <= 0; // 'A' released
+                    8'h1B: s_pressed <= 0; // 'S' released
+                    8'h42: k_pressed <= 0; // 'K' released
+                    8'h4B: l_pressed <= 0; // 'L' released
+                    default: ; // No action for other keys
+                endcase
+            end
+            else begin // Key press detected
+                key_release <= 0;
+                case (dout)
+                    8'h1C: a_pressed <= 1; // 'A' pressed
+                    8'h1B: s_pressed <= 1; // 'S' pressed
+                    8'h42: k_pressed <= 1; // 'K' pressed
+                    8'h4B: l_pressed <= 1; // 'L' pressed
+                    default: ; // No action for other keys
+                endcase
+            end
+        end
+    end
+
+    // Assign outputs
+    assign KEY_A = a_pressed;
+    assign KEY_S = s_pressed;
+    assign KEY_K = k_pressed;
+    assign KEY_L = l_pressed;
+
+endmodule
