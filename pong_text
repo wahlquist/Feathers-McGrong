@@ -1,0 +1,235 @@
+`timescale 1ns / 1ps
+
+module pong_text(
+    input clk,
+    input [1:0] ball,
+    input [3:0] p1_dig0, p1_dig1,  // Player 1 score (right paddle)
+    input [3:0] p2_dig0, p2_dig1,  // Player 2 score (left paddle)
+    input [9:0] x, y,
+    output [3:0] text_on,
+    output reg [11:0] text_rgb
+);
+    
+    // Signal declaration
+    wire [10:0] rom_addr;
+    reg  [6:0] char_addr, char_addr_p1, char_addr_p2, char_addr_l, char_addr_r, char_addr_o;
+    reg  [3:0] row_addr;
+    reg  [2:0] bit_addr;
+    wire [7:0] ascii_word;
+    wire ascii_bit, p1_score_on, p2_score_on, logo_on, rule_on, over_on;
+
+    // Instantiate ASCII ROM
+    ascii_rom ascii_unit(.clk(clk), .addr(rom_addr), .data(ascii_word));
+   
+    // ---------------------------------------------------------------------------
+    // Player 1 Score Region (Right Paddle)
+    // - Display "P1: dd" above right paddle (x = 560-624, y = 16-48)
+    // - Scale to 16x32 text size, 4 characters
+    // ---------------------------------------------------------------------------
+    assign p1_score_on = (y >= 16) && (y < 48) && (x >= 560) && (x < 624);
+    wire [3:0] row_addr_p1 = y[4:1];  // 32 rows (16x32 character height)
+    wire [2:0] bit_addr_p1 = x[3:1];  // 8 bits per row (16x32 character width)
+    wire [2:0] p1_col_index = (x - 560) >> 4; // Divide 560-624 into 4 columns (16 pixels each)
+    always @*
+        case (p1_col_index)
+            3'h0: char_addr_p1 = 7'h50;          // P
+            3'h1: char_addr_p1 = 7'h31;          // 1
+            3'h2: char_addr_p1 = 7'h3A;          // :
+            3'h3: char_addr_p1 = {3'b011, p1_dig1}; // Tens (0-9 maps to 0x30-0x39)
+            3'h4: char_addr_p1 = {3'b011, p1_dig0}; // Units
+            default: char_addr_p1 = 7'h00;       // Blank
+        endcase
+    
+    // ---------------------------------------------------------------------------
+    // Player 2 Score Region (Left Paddle)
+    // - Display "P2: dd" above left paddle (x = 16-80, y = 16-48)
+    // - Scale to 16x32 text size, 4 characters
+    // ---------------------------------------------------------------------------
+    assign p2_score_on = (y >= 16) && (y < 48) && (x >= 16) && (x < 80);
+    wire [3:0] row_addr_p2 = y[4:1];  // 32 rows
+    wire [2:0] bit_addr_p2 = x[3:1];  // 8 bits per row
+    wire [2:0] p2_col_index = (x - 16) >> 4; // Divide 16-80 into 4 columns (16 pixels each)
+    always @*
+        case (p2_col_index)
+            3'h0: char_addr_p2 = 7'h50;          // P
+            3'h1: char_addr_p2 = 7'h32;          // 2
+            3'h2: char_addr_p2 = 7'h3A;          // :
+            3'h3: char_addr_p2 = {3'b011, p2_dig1}; // Tens
+            3'h4: char_addr_p2 = {3'b011, p2_dig0}; // Units
+            default: char_addr_p2 = 7'h00;       // Blank
+        endcase
+
+    // --------------------------------------------------------------------------
+    // Logo Region
+    // - Display "ECE340" at top center (unchanged from your updated version)
+    // - Scale to 64x128 text size
+    // --------------------------------------------------------------------------
+    assign logo_on = (y[9:7] == 2) && (x[9:6] >= 2) && (x[9:6] <= 9);
+    wire [3:0] row_addr_l = y[6:3];
+    wire [2:0] bit_addr_l = x[5:3];
+    wire [3:0] col_index = x[9:6] - 2;
+    always @*
+        case (col_index)
+            4'd0: char_addr_l = 7'h45; // E
+            4'd1: char_addr_l = 7'h43; // C
+            4'd2: char_addr_l = 7'h45; // E
+            4'd3: char_addr_l = 7'h4e; // N
+            4'd4: char_addr_l = 7'h33; // 3
+            4'd5: char_addr_l = 7'h34; // 4
+            4'd6: char_addr_l = 7'h30; // 0
+            default: char_addr_l = 7'h00; // Blank
+        endcase
+
+    // --------------------------------------------------------------------------
+    // Rule Region
+    // - Display rules in center (unchanged)
+    // - Scale to 8x16 text size
+    // --------------------------------------------------------------------------
+    assign rule_on = (x[9:7] == 2) && (y[9:6] == 2);
+    wire [3:0] row_addr_r = y[3:0];
+    wire [2:0] bit_addr_r = x[2:0];
+    wire [7:0] rule_rom_addr = {y[5:4], x[6:3]};
+    always @*
+        case (rule_rom_addr)
+            // Row 1
+            6'h00: char_addr_r = 7'h52; // R
+            6'h01: char_addr_r = 7'h55; // U
+            6'h02: char_addr_r = 7'h4C; // L
+            6'h03: char_addr_r = 7'h45; // E
+            6'h04: char_addr_r = 7'h3A; // :
+            6'h05: char_addr_r = 7'h00; //
+            6'h06: char_addr_r = 7'h00; //
+            6'h07: char_addr_r = 7'h00; //
+            6'h08: char_addr_r = 7'h00; //
+            6'h09: char_addr_r = 7'h00; //
+            6'h0A: char_addr_r = 7'h00; //
+            6'h0B: char_addr_r = 7'h00; //
+            6'h0C: char_addr_r = 7'h00; //
+            6'h0D: char_addr_r = 7'h00; //
+            6'h0E: char_addr_r = 7'h00; //
+            6'h0F: char_addr_r = 7'h00; //
+            // Row 2
+            6'h10: char_addr_r = 7'h55; // U
+            6'h11: char_addr_r = 7'h53; // S
+            6'h12: char_addr_r = 7'h45; // E
+            6'h13: char_addr_r = 7'h00; // 
+            6'h14: char_addr_r = 7'h54; // T
+            6'h15: char_addr_r = 7'h57; // W
+            6'h16: char_addr_r = 7'h4F; // O
+            6'h17: char_addr_r = 7'h00; //
+            6'h18: char_addr_r = 7'h42; // B
+            6'h19: char_addr_r = 7'h55; // U
+            6'h1A: char_addr_r = 7'h54; // T
+            6'h1B: char_addr_r = 7'h54; // T
+            6'h1C: char_addr_r = 7'h4F; // O
+            6'h1D: char_addr_r = 7'h4E; // N
+            6'h1E: char_addr_r = 7'h53; // S
+            6'h1F: char_addr_r = 7'h00; //
+            // Row 3
+            6'h20: char_addr_r = 7'h54; // T
+            6'h21: char_addr_r = 7'h4F; // O
+            6'h22: char_addr_r = 7'h00; // 
+            6'h23: char_addr_r = 7'h4D; // M
+            6'h24: char_addr_r = 7'h4F; // O
+            6'h25: char_addr_r = 7'h56; // V
+            6'h26: char_addr_r = 7'h45; // E
+            6'h27: char_addr_r = 7'h00; //
+            6'h28: char_addr_r = 7'h50; // P
+            6'h29: char_addr_r = 7'h41; // A
+            6'h2A: char_addr_r = 7'h44; // D
+            6'h2B: char_addr_r = 7'h44; // D
+            6'h2C: char_addr_r = 7'h4C; // L
+            6'h2D: char_addr_r = 7'h45; // E
+            6'h2E: char_addr_r = 7'h00; // 
+            6'h2F: char_addr_r = 7'h00; //
+            // Row 4
+            6'h30: char_addr_r = 7'h55; // U
+            6'h31: char_addr_r = 7'h50; // P
+            6'h32: char_addr_r = 7'h00; // 
+            6'h33: char_addr_r = 7'h41; // A
+            6'h34: char_addr_r = 7'h4E; // N
+            6'h35: char_addr_r = 7'h44; // D
+            6'h36: char_addr_r = 7'h00; // 
+            6'h37: char_addr_r = 7'h44; // D
+            6'h38: char_addr_r = 7'h4F; // O
+            6'h39: char_addr_r = 7'h57; // W
+            6'h3A: char_addr_r = 7'h4E; // N
+            6'h3B: char_addr_r = 7'h2E; // .
+            6'h3C: char_addr_r = 7'h00; // 
+            6'h3D: char_addr_r = 7'h00; // 
+            6'h3E: char_addr_r = 7'h00; // 
+            6'h3F: char_addr_r = 7'h00; //
+        endcase
+
+    // --------------------------------------------------------------------------
+    // Game Over Region
+    // - Display "GAME OVER" at center (unchanged)
+    // - Scale to 32x64 text size
+    // --------------------------------------------------------------------------
+    assign over_on = (y[9:6] == 3) && (x[9:5] >= 5) && (x[9:5] <= 13);
+    wire [3:0] row_addr_o = y[5:2];
+    wire [2:0] bit_addr_o = x[4:2];
+    always @*
+        case (x[8:5])
+            4'h5: char_addr_o = 7'h47;  // G
+            4'h6: char_addr_o = 7'h41;  // A
+            4'h7: char_addr_o = 7'h4D;  // M
+            4'h8: char_addr_o = 7'h45;  // E
+            4'h9: char_addr_o = 7'h00;  // 
+            4'hA: char_addr_o = 7'h4F;  // O
+            4'hB: char_addr_o = 7'h56;  // V
+            4'hC: char_addr_o = 7'h45;  // E
+            4'hD: char_addr_o = 7'h52;  // R
+            default: char_addr_o = 7'h00; // Blank
+        endcase
+    // --------------------------------------------------------------------------
+    // Mux for ASCII ROM Addresses and RGB
+    // --------------------------------------------------------------------------
+    always @* begin
+        text_rgb = 12'h888; // Aqua background
+        
+        if (p1_score_on) begin
+            char_addr = char_addr_p1;
+            row_addr  = row_addr_p1;
+            bit_addr  = bit_addr_p1;
+            if (ascii_bit)
+                text_rgb = 12'hFFF; // White
+        end
+        else if (p2_score_on) begin
+            char_addr = char_addr_p2;
+            row_addr  = row_addr_p2;
+            bit_addr  = bit_addr_p2;
+            if (ascii_bit)
+                text_rgb = 12'hFFF; // White
+        end
+        else if (rule_on) begin
+            char_addr = char_addr_r;
+            row_addr  = row_addr_r;
+            bit_addr  = bit_addr_r;
+            if (ascii_bit)
+                text_rgb = 12'hFFF; // White
+        end
+        else if (logo_on) begin
+            char_addr = char_addr_l;
+            row_addr  = row_addr_l;
+            bit_addr  = bit_addr_l;
+            if (ascii_bit)
+                text_rgb = 12'hFFF; // White
+        end
+        else if (over_on) begin
+            char_addr = char_addr_o;
+            row_addr  = row_addr_o;
+            bit_addr  = bit_addr_o;
+            if (ascii_bit)
+                text_rgb = 12'hFFF; // White
+        end
+    end
+
+    // Assign text_on outputs (removed left_paddle_on since it's unused)
+    assign text_on = {p1_score_on | p2_score_on, logo_on, rule_on, over_on};
+
+    // ASCII ROM interface
+    assign rom_addr  = {char_addr, row_addr};
+    assign ascii_bit = ascii_word[~bit_addr];
+
+endmodule
