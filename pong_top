@@ -1,0 +1,531 @@
+`timescale 1ns / 1ps
+// Mortal McGrawmbat
+// This module instantiates the keyboard controls, VGA controller, and FSM states.
+// The title screen displays a constant white color.
+module pong_top(
+    input clk,              // 100MHz system clock
+    input reset,            // btnR
+    input wire ps2d,
+    input wire ps2c,
+    input btnC,
+     output tone,
+    output hsync,           // VGA horizontal sync
+    output vsync,           // VGA vertical sync
+    output [11:0] rgb
+         // 12-bit RGB output to DAC/VGA
+);
+    // FSM State declarations for 5 states
+    parameter title   = 3'b000; // Title screen state
+    parameter newgame = 3'b001;
+    parameter play    = 3'b010;
+    parameter newball = 3'b011;
+    parameter over    = 3'b100;
+
+    // Signal declarations
+    reg [2:0] state_reg, state_next;
+    wire [9:0] w_x, w_y;
+    wire w_vid_on, w_p_tick, graph_on, hit, miss_left, miss_right;
+    wire [3:0] text_on;
+    wire [11:0] graph_rgb, text_rgb;
+    // Title screen color is fixed to white
+    wire [11:0] title_rgb;
+    assign title_rgb = 12'hFFF;  // White color
+
+    reg [11:0] rgb_reg, rgb_next;
+    wire [3:0] p1_dig0, p1_dig1;
+    wire [3:0] p2_dig0, p2_dig1;
+    reg gra_still, d_inc_p1, d_inc_p2, d_clr, timer_start;
+    wire timer_tick, timer_up;
+    reg [1:0] ball_reg, ball_next;
+    wire speed_up_p1, speed_up_p2;
+    wire [2:0] state_reg_out;
+    wire over_out;
+    wire KEY_A, KEY_S, KEY_K, KEY_L;
+    wire key_release;
+
+    assign state_reg_out = state_reg;
+    assign over_out = (state_reg == over);
+
+    // Instantiate keyboard module
+    keyboard kbd(
+        .clk(clk),
+        .reset(reset),
+        .ps2d(ps2d),
+        .ps2c(ps2c),
+        .KEY_A(KEY_K),  // Player 2 up (left paddle)
+        .KEY_S(KEY_L),  // Player 2 down
+        .KEY_K(KEY_A),  // Player 1 up (right paddle)
+        .KEY_L(KEY_S),  // Player 1 down
+        .key_release(key_release)
+    );
+
+    // Instantiate VGA controller module
+    vga_controller vga_unit(
+        .clk_100MHz(clk),
+        .reset(reset),
+        .video_on(w_vid_on),
+        .hsync(hsync),
+        .vsync(vsync),
+        .p_tick(w_p_tick),
+        .x(w_x),
+        .y(w_y)
+    );
+
+    // Instantiate text unit
+    pong_text text_unit(
+        .clk(clk),
+        .x(w_x),
+        .y(w_y),
+        .p1_dig0(p1_dig0),
+        .p1_dig1(p1_dig1),
+        .p2_dig0(p2_dig0),
+        .p2_dig1(p2_dig1),
+        .ball(ball_reg),
+        .text_on(text_on),
+        .text_rgb(text_rgb)
+    );
+
+    // Instantiate graph unit
+    pong_graph graph_unit(
+        .clk(clk),
+        .reset(reset),
+        .key_a(KEY_A),
+        .key_s(KEY_S),
+        .key_k(KEY_K),
+        .key_l(KEY_L),
+        .gra_still(gra_still),
+        .video_on(w_vid_on),
+        .x(w_x),
+        .y(w_y),
+        .speed_up(speed_up_p1 | speed_up_p2),
+        .state_reg_in(state_reg_out),
+        .over_in(over_out),
+        .graph_on(graph_on),
+        .hit(hit),
+        .miss_left(miss_left),
+        .miss_right(miss_right),
+        .graph_rgb(graph_rgb)
+    );
+
+    // Instantiate timer unit
+    assign timer_tick = (w_x == 0) && (w_y == 0);
+    timer timer_unit(
+        .clk(clk),
+        .reset(reset),
+        .timer_tick(timer_tick),
+        .timer_start(timer_start),
+        .timer_up(timer_up)
+    );
+
+    // Instantiate score counters
+    m100_counter p1_counter(
+        .clk(clk),
+        .reset(reset),
+        .d_inc(d_inc_p1),
+        .d_clr(d_clr),
+        .dig0(p1_dig0),
+        .dig1(p1_dig1),
+        .speed_up(speed_up_p1)
+    );
+    m100_counter p2_counter(
+        .clk(clk),
+        .reset(reset),
+        .d_inc(d_inc_p2),
+        .d_clr(d_clr),
+        .dig0(p2_dig0),
+        .dig1(p2_dig1),
+        .speed_up(speed_up_p2)
+    );
+
+    // FSM state and registers
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state_reg <= title; // Start at title screen
+            ball_reg <= 0;
+            rgb_reg <= 0;
+        end else begin
+            state_reg <= state_next;
+            ball_reg <= ball_next;
+            if (w_p_tick)
+                rgb_reg <= rgb_next;
+        end
+    end
+
+    // FSM next state logic
+    always @* begin
+        gra_still = 1'b1;
+        timer_start = 1'b0;
+        d_inc_p1 = 1'b0;
+        d_inc_p2 = 1'b0;
+        d_clr = 1'b0;
+        state_next = state_reg;
+        ball_next = ball_reg;
+        case (state_reg)
+            title: begin
+                if (KEY_A || KEY_S || KEY_K || KEY_L)
+                    state_next = newgame;
+            end
+            newgame: begin
+                ball_next = 2'b11; // 3 balls
+                d_clr = 1'b1;      // Clear scores
+                if (KEY_A || KEY_S || KEY_K || KEY_L) begin
+                    state_next = play;
+                    ball_next = ball_reg - 1;
+                end
+            end
+            play: begin
+                gra_still = 1'b0;
+                if (miss_left) begin  // Player 2 misses, Player 1 scores
+                    d_inc_p1 = 1'b1;
+                    state_next = newball;
+                    timer_start = 1'b1;
+                    ball_next = ball_reg - 1;
+                end else if (miss_right) begin // Player 1 misses, Player 2 scores
+                    d_inc_p2 = 1'b1;
+                    state_next = newball;
+                    timer_start = 1'b1;
+                    ball_next = ball_reg - 1;
+                end
+                if (ball_reg == 0 && (miss_left || miss_right))
+                    state_next = over;
+            end
+            newball:
+                if (timer_up && (KEY_A || KEY_S || KEY_K || KEY_L))
+                    state_next = play;
+            over:
+                if (timer_up)
+                    state_next = newgame;
+        endcase
+    end
+
+    // RGB multiplexing logic
+    always @* begin
+        if (~w_vid_on)
+            rgb_next = 12'h000;         // Black outside active video
+        else if (state_reg == title)
+            rgb_next = title_rgb;       // Display white title screen
+        else if (text_on[3] || ((state_reg == newgame) && text_on[1]) ||
+                 ((state_reg == over) && text_on[0]))
+            rgb_next = text_rgb;
+        else if (graph_on)
+            rgb_next = graph_rgb;
+        else if (text_on[2])
+            rgb_next = text_rgb;
+        else
+            rgb_next = 12'h888;         // Background color
+    end
+
+    assign rgb = rgb_reg;
+
+
+
+      // Connect this output to your speaker module (with any required filtering/amplification)
+
+
+   parameter NUM_NOTES = 84;
+   // Pre-calculated divider values for a 50MHz clock:
+   // Divider = 50,000,000 / (2 * note_frequency)
+  
+  
+   localparam DIV_rest = 0;
+   localparam DIV_A7 = 50000000 / (2 * 1760);
+   localparam DIV_C7 = 50000000 / (2 * 1567.98);
+   localparam DIV_F6 = 50000000 / (2 * 1396.91);
+   localparam DIV_E6 = 50000000 / (2 * 1318.51);
+   localparam DIV_D6 = 50000000 / (2 * 1174.66);
+   localparam DIV_C6 = 50000000 / (2 * 1046.50);
+   localparam DIV_B6 = 50000000 / (2 * 987.77);
+   localparam DIV_Bf6 = 50000000 / (2 * 932.33 );
+   localparam DIV_A6 = 50000000 / (2 * 880);
+   localparam DIV_G5 = 50000000 / (2 * 783.99);
+   localparam DIV_F5 = 50000000 / (2 * 698.46);
+   localparam DIV_E5 = 50000000 / (2 * 659.25);
+   localparam DIV_D5 = 50000000 / (2 * 587);
+   localparam DIV_C5 = 50000000 / (2 * 523.25);
+   localparam DIV_Bf5 = 50000000 / (2 * 466.16);
+   localparam DIV_B5 = 50000000 / (2 * 493.88);
+   localparam DIV_A5 = 50000000 / (2 * 440);
+   localparam DIV_G4 = 50000000 / (2 * 392);
+   localparam DIV_F4 = 50000000 / (2 * 349); // approx 71,680
+   localparam DIV_E4 = 50000000 / (2 * 329.63); // approx 75,758
+   localparam DIV_Df4 = 50000000 / (2 * 393.66);
+   localparam DIV_D4 = 50000000 / (2 * 293.66); // approx 85,034
+   localparam DIV_C4 = 50000000 / (2 * 261.63); // approx 95,421
+   localparam DIV_Gs4 = 50000000 / (2 * 415.3);
+   localparam DIV_Ds4 = 50000000 / (2 * 311.13);
+   localparam DIV_Cs4 = 50000000 / (2 * 177.18);
+   
+   
+
+   // Duration for each note (0.5 seconds at 50MHz)
+   localparam DUR4 = 200000000;
+   localparam DUR3 = 150000000;
+   localparam DUR2 = 100000000;
+    localparam DUR1 = 50000000;
+    localparam DUR8 = 25000000;
+   localparam DUR16 = 12500000;
+   localparam DUR32 = 62500000;
+     localparam DURT= 25000000;
+     localparam DURT2= 12500000;
+ 
+
+   // Arrays to hold note divider values and durations
+   reg [100:0] note_dividers [0:NUM_NOTES-1];
+   reg [100:0] note_durations [0:NUM_NOTES-1];
+
+   initial begin
+          note_dividers[0] = DIV_C5;
+      note_dividers[1] = DIV_Bf5;
+      note_dividers[2] = DIV_A5;
+      note_dividers[3] = DIV_C5;
+      note_dividers[4] = DIV_Bf5;
+      note_dividers[5] = DIV_A5;
+      note_dividers[6] = DIV_C5;
+      note_dividers[7] = DIV_G4;
+      note_dividers[8] = DIV_G4;
+      //measure three
+      note_dividers[9] = DIV_D5;
+      note_dividers[10] = DIV_C5;
+      note_dividers[11] = DIV_D5;
+      note_dividers[12] = DIV_E5;
+      note_dividers[13] = DIV_D5;
+      note_dividers[14] = DIV_C5;
+      note_dividers[15] = DIV_Bf5;
+      //measure four 
+      note_dividers[16] = DIV_A5;
+      note_dividers[17] = DIV_A5;
+      note_dividers[18] = DIV_C5;
+      note_dividers[19] = DIV_F5;
+      note_dividers[20] = DIV_C5;
+      note_dividers[21] = DIV_F5;
+      note_dividers[22] = DIV_C5;
+      note_dividers[23] = DIV_F5;
+      note_dividers[24] = DIV_A6;
+      
+     //mesure  5
+      note_dividers[25] = DIV_C5;
+      note_dividers[26] = DIV_Bf5;
+      note_dividers[27] = DIV_A5;
+      note_dividers[28] = DIV_C5;
+      note_dividers[29] = DIV_Bf5;
+      note_dividers[30] = DIV_A5;
+      //mesure 6
+      note_dividers[31] = DIV_C5;
+      note_dividers[32] = DIV_G4;
+      note_dividers[33] = DIV_G4;
+      //mesure 7
+      note_dividers[34] = DIV_D5;
+       note_dividers[35] = DIV_C5;
+      note_dividers[36] = DIV_D5;
+      note_dividers[37] = DIV_C5;
+      note_dividers[38] = DIV_D5;
+      note_dividers[39] = DIV_E5;
+      //mesure 8
+      note_dividers[40] = DIV_D5;
+      note_dividers[41] = DIV_E5;
+      note_dividers[42] = DIV_F5;
+      note_dividers[43] = DIV_C5;
+      note_dividers[44] = DIV_F5;
+      note_dividers[45] = DIV_F5;
+      //mesure 9
+      note_dividers[46] = DIV_E5;
+      note_dividers[47] = DIV_D5;
+      note_dividers[48] = DIV_F5;
+      note_dividers[49] = DIV_E5;
+      note_dividers[50] = DIV_D5;
+      note_dividers[51] = DIV_F5;
+      //mesure 10
+      note_dividers[52] = DIV_E5;
+      note_dividers[53] = DIV_D5;
+      note_dividers[54] = DIV_F5;
+      note_dividers[55] = DIV_D5;
+      note_dividers[56] = DIV_C5;
+      note_dividers[57] = DIV_C5;
+      //mesure 11
+      note_dividers[58] = DIV_B5;
+      note_dividers[59] = DIV_C5;
+      note_dividers[60] = DIV_D5;
+      note_dividers[61] = DIV_C5;
+      note_dividers[62] = DIV_D5;
+      note_dividers[63] = DIV_C5;
+      note_dividers[64] = DIV_A5;
+      note_dividers[65] = DIV_G4;
+      note_dividers[66] = DIV_A5;
+      //mesure 12
+      note_dividers[67] = DIV_G5;
+      note_dividers[68] = DIV_A5;
+      note_dividers[69] = DIV_A5;
+      note_dividers[70] = DIV_A5;
+      note_dividers[71] = DIV_A5;
+      //mesure 13
+      note_dividers[72] = DIV_Gs4;
+      note_dividers[73] = DIV_A5;
+      note_dividers[74] = DIV_A5;
+      note_dividers[75] = DIV_G4;
+      note_dividers[76] = DIV_E4;
+      note_dividers[77] = DIV_E4;
+      //mesure 14
+      note_dividers[78] = DIV_Ds4;
+      note_dividers[79] = DIV_E4;
+      note_dividers[80] = DIV_G4;
+      note_dividers[81] = DIV_F4;
+      note_dividers[82] = DIV_D4;
+      note_dividers[83] = DIV_D4;
+      note_dividers[84] = DIV_Cs4;
+
+//      note_dividers[84] = DIV_D4;
+
+//      note_dividers[76] = DIV_;
+//      note_dividers[77] = DIV_;
+//      note_dividers[78] = DIV_;
+//      note_dividers[79] = DIV_;
+//      note_dividers[80] = DIV_;
+//      note_dividers[81] = DIV_;
+//      note_dividers[82] = DIV_;
+//      note_dividers[83] = DIV_;
+//      note_dividers[84] = DIV_;
+//      note_dividers[85] = DIV_;
+//      note_dividers[86] = DIV_;
+//      note_dividers[87] = DIV_;
+//      note_dividers[88] = DIV_;
+//      note_dividers[89] = DIV_;
+//      note_dividers[90] = DIV_;
+      
+  
+       //mesure 1
+      note_durations[0] = DUR1;
+      note_durations[1] = DUR8;
+      note_durations[2] = DUR8;
+      note_durations[3] = DUR1;
+      note_durations[4] = DUR8;
+      note_durations[5] = DUR8;
+      //mesure 2
+      note_durations[6] = DUR8;
+      note_durations[7] = DUR8;
+      note_durations[8] = DUR2;
+      //mesure 3
+      note_durations[9] = DURT;
+      note_durations[10] = DURT;
+      note_durations[11] = DURT;
+      note_durations[12] = DUR8;
+      note_durations[13] = DURT;
+      note_durations[14] = DURT;
+      note_durations[15] = DURT;
+      //mesure 4
+      note_durations[16] = DURT;
+      note_durations[17] = DURT2;
+      note_durations[18] = DURT2;
+      note_durations[19] = DUR8;
+      note_durations[20] = DUR8;
+      note_durations[21] = DUR8;
+      note_durations[22] = DUR8;
+      note_durations[23] = DUR8;
+      note_durations[24] = DUR8;
+      //mesure 5
+      note_durations[25] = DUR1;
+      note_durations[26] = DUR8;
+      note_durations[27] = DUR8;
+      note_durations[28] = DUR1;
+      note_durations[29] = DUR8;
+      note_durations[30] = DUR8;
+      //mesure 6
+      note_durations[31] = DUR8;
+      note_durations[32] = DUR8;
+      note_durations[33] = DUR2;
+      //mesure  7
+      note_durations[34] = DURT;
+      note_durations[35] = DURT;
+      note_durations[36] = DURT;
+      note_durations[37] = DUR1;
+      note_durations[38] = DUR1;
+      note_durations[39] = DUR8;
+      //mesure 8
+      note_durations[40] = DUR1;
+      note_durations[41] = DUR1;
+      note_durations[42] = DUR8;
+      note_durations[43] = DUR8;
+      note_durations[44] = DUR8;
+      note_durations[45] = DUR8;
+      //mesure 9
+      note_durations[46] = DUR1;
+      note_durations[47] = DUR8;
+      note_durations[48] = DUR1;
+      note_durations[49] = DURT;
+      note_durations[50] = DURT;
+      note_durations[51] = DURT;
+      //mesure 10
+      note_durations[52] = DUR1;
+      note_durations[53] = DUR8;
+      note_durations[54] = DUR1; 
+      note_durations[55] = DURT;
+      note_durations[56] = DURT;
+      note_durations[57] = DURT;
+      //mesure 11
+      note_durations[58] = DUR8;
+      note_durations[59] = DUR8;
+      note_durations[60] = DUR8;
+      note_durations[61] = DUR8;
+      note_durations[62] = DUR16;
+      note_durations[63] = DUR8;
+      note_durations[64] = DUR8;
+      note_durations[65] = DUR16;
+      note_durations[66] = DUR8;
+      //mesure 12
+      note_durations[67] = DUR2;
+      note_durations[68] = DUR8;
+      note_durations[69] = DUR8;
+      note_durations[70] = DUR8;
+      note_durations[71] = DUR8;
+      //mesure 13
+      note_durations[72] = DUR1;
+      note_durations[73] = DUR8;
+      note_durations[74] = DUR1; 
+      note_durations[75] = DURT;
+      note_durations[76] = DURT;
+      note_durations[77] = DURT;
+      //mesure 14
+      note_durations[78] = DUR1;
+      note_durations[79] = DUR8;
+      note_durations[80] = DUR1;
+      note_durations[81] = DURT;
+      note_durations[82] = DURT;
+      note_durations[83] = DURT;
+      //mesure 15
+//      note_durations[84] = DUR1;
+      
+     
+      
+   end
+
+   reg [8:0] note_index;         // Index to select the current note (for 4 notes)
+   reg [31:0] duration_counter;  // Counts clock cycles for the current note's duration
+
+   wire current_tone;
+   tone_generator tg(
+      .clk(clk),
+      .reset(reset),
+      .divider(note_dividers[note_index]),
+      .tone(current_tone)
+   );
+
+   assign tone = current_tone;
+
+   always @(posedge clk or posedge reset) begin
+      if (reset) begin
+         note_index <= 0;
+         duration_counter <= 0;
+      end else begin
+         if (duration_counter < note_durations[note_index])
+            duration_counter <= duration_counter + 1;
+         else begin
+            duration_counter <= 0;
+            if (note_index < NUM_NOTES - 1)
+                note_index <= note_index + 1;
+            else
+                note_index <= 0;  // Loop back to the first note
+         end
+      end
+   end
+
+endmodule
+
